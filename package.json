@@ -11,10 +11,10 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@ai-sdk/langchain": "^2.0.3",
-    "@ai-sdk/react": "^3.0.3",
+    "@ai-sdk/langchain": "^2.0.15",
+    "@ai-sdk/react": "^3.0.14",
     "@langchain/openai": "^1.2.0",
-    "ai": "^6.0.3",
+    "ai": "^6.0.14",
     "langchain": "^1.2.3",
     "next": "16.1.1",
     "react": "19.2.3",
