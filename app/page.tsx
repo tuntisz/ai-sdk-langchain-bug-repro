@@ -8,8 +8,9 @@ import {
   ToolUIPart,
   ToolResultPart,
   DynamicToolUIPart,
+  lastAssistantMessageIsCompleteWithApprovalResponses,
 } from "ai";
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect } from "react";
 
 const TextPart = ({ part }: { part: TextUIPart }) => (
   <div className="whitespace-pre-wrap leading-relaxed">{part.text}</div>
@@ -45,18 +46,73 @@ const ReasoningPart = ({ part }: { part: ReasoningUIPart }) => (
   </div>
 );
 
+// Approval request component for money transfers
+const ApprovalRequest = ({
+  part,
+  onApprove,
+  onDeny
+}: {
+  part: ToolUIPart;
+  onApprove: () => void;
+  onDeny: () => void;
+}) => {
+  const input = part.input as { amount?: number; recipient?: string } | undefined;
+  return (
+    <div className="font-mono text-sm bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-4 space-y-3">
+      <div className="flex items-center gap-2 text-yellow-400">
+        <span className="text-lg">💸</span>
+        <span className="font-bold">Approve Money Transfer?</span>
+      </div>
+      <div className="text-[var(--foreground)] space-y-1">
+        {input?.amount && (
+          <p>
+            <strong>Amount:</strong>{" "}
+            <span className="text-green-400 font-bold">${input.amount.toLocaleString()}</span>
+          </p>
+        )}
+        {input?.recipient && <p><strong>Recipient:</strong> {input.recipient}</p>}
+      </div>
+      <div className="flex gap-2 pt-2">
+        <button
+          onClick={onApprove}
+          className="px-4 py-2 bg-green-500 text-white rounded-lg font-medium hover:bg-green-600 transition-colors"
+        >
+          Approve Transfer
+        </button>
+        <button
+          onClick={onDeny}
+          className="px-4 py-2 bg-red-500 text-white rounded-lg font-medium hover:bg-red-600 transition-colors"
+        >
+          Deny
+        </button>
+      </div>
+    </div>
+  );
+};
+
 export default function Home() {
   const [input, setInput] = useState("");
+  const [threadId] = useState(() => `thread-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const { messages, sendMessage, status } = useChat({
+  const { messages, sendMessage, addToolApprovalResponse, status } = useChat({
     transport: new DefaultChatTransport({
       api: "/api/agent",
+      body: { threadId }, // Send threadId with every request
     }),
+    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
     onFinish: (result) => {
       console.log({result});
     },
   });
   const isLoading = status === "streaming" || status === "submitted";
+
+  const handleApprove = (approvalId: string) => {
+    addToolApprovalResponse({ id: approvalId, approved: true });
+  };
+
+  const handleDeny = (approvalId: string) => {
+    addToolApprovalResponse({ id: approvalId, approved: false, reason: "User denied" });
+  };
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -136,15 +192,29 @@ export default function Home() {
                       : "bg-[var(--assistant-bubble)] border border-[var(--accent)]/10 rounded-tl-md"
                   }`}
                 >
-                  {message.parts.map((part, partIdx) => (
+                  {message.parts.map((part, partIdx) => {
+                    return (
                     <div key={partIdx}>
                       {part.type === "text" && <TextPart part={part} />}
                       {part.type === "tool-invocation" && <ToolPart part={part as ToolUIPart} />}
                       {part.type === "reasoning" && <ReasoningPart part={part as ReasoningUIPart} />}
                       {part.type === "tool-result" && <ToolResultPartUI part={part as unknown as ToolResultPart} />}
-                      {part.type === "dynamic-tool" && <DynamicToolPartUI part={part as unknown as DynamicToolUIPart} />}
+                      {part.type === "dynamic-tool" && (() => {
+                        const dynPart = part as DynamicToolUIPart;
+                        if (dynPart.state === "approval-requested" && dynPart.approval) {
+                          return (
+                            <ApprovalRequest
+                              part={dynPart as unknown as ToolUIPart}
+                              onApprove={() => handleApprove(dynPart.approval!.id)}
+                              onDeny={() => handleDeny(dynPart.approval!.id)}
+                            />
+                          );
+                        }
+                        return <DynamicToolPartUI part={dynPart} />;
+                      })()}
                     </div>
-                  ))}
+                  );
+                  })}
                 </div>
               </div>
             </div>

@@ -1,56 +1,80 @@
 import { createUIMessageStreamResponse, UIMessage } from 'ai';
-import { createAgent, tool, ToolRuntime } from 'langchain';
-import { ChatOpenAI, tools } from '@langchain/openai';
 import { toBaseMessages, toUIMessageStream } from '@ai-sdk/langchain';
-import { z } from 'zod';
-import fs from 'fs';
+import { Command } from '@langchain/langgraph';
+import { graphAgent } from './graph-agent';
 
 export const maxDuration = 60;
 
-const model = new ChatOpenAI({
-  model: 'gpt-4o',
-  temperature: 0.7,
-});
-
-// Image generation tool configuration
-const imageGenerationTool = tools.imageGeneration({
-  size: '1024x1024',
-  quality: 'high',
-  outputFormat: 'png',
-});
-
-const mathsTool = tool(async ({ input }: { input: number }) => {
-  return {
-    result: `${Math.random() * input} is a random number times ${input}`,
-  };
-}, {
-  name: 'maths',
-  description: 'Use this tool to solve math problems. If the user says do maths, you should use this tool.',
-  schema: z.object({
-    input: z.number(),
-  })
-});
-
-// Create a LangChain agent with tools
-const agent = createAgent({
-  model,
-  tools: [mathsTool],
-  systemPrompt: 'You are a creative AI artist assistant.',
-});
+// Extract approval responses from UI messages
+function extractApprovalResponses(messages: UIMessage[]): Array<{ id: string; approved: boolean; reason?: string }> {
+  const approvals: Array<{ id: string; approved: boolean; reason?: string }> = [];
+  for (const msg of messages) {
+    for (const part of msg.parts) {
+      const partAny = part as unknown as {
+        type: string;
+        state?: string;
+        approval?: { id: string; approved?: boolean; reason?: string };
+      };
+      // Check for dynamic-tool with approval-responded state
+      if (partAny.type === 'dynamic-tool' && partAny.state === 'approval-responded' && partAny.approval) {
+        approvals.push({
+          id: partAny.approval.id,
+          approved: partAny.approval.approved ?? false,
+          reason: partAny.approval.reason,
+        });
+      }
+    }
+  }
+  return approvals;
+}
 
 export async function POST(req: Request) {
-  const { messages }: { messages: UIMessage[] } = await req.json();
+  const { messages, threadId }: { messages: UIMessage[]; threadId?: string } = await req.json();
 
+  // Debug: log all message parts
+  console.log('=== Incoming messages ===');
+  for (const msg of messages) {
+    console.log('Message role:', msg.role);
+    for (const part of msg.parts) {
+      console.log('  Part type:', part.type, JSON.stringify(part).slice(0, 200));
+    }
+  }
+
+  // Use provided threadId or generate a new one for fresh conversations
+  const thread_id = threadId || `thread-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  console.log('Thread ID:', thread_id);
+
+  // Check for approval responses
+  const approvalResponses = extractApprovalResponses(messages);
+  console.log('Approval responses found:', approvalResponses);
+
+  if (approvalResponses.length > 0) {
+    // Resume from interrupt with approval
+    const approval = approvalResponses[0]; // Handle first approval
+    console.log('Resuming with approval:', approval);
+
+    const stream = await graphAgent.stream(
+      new Command({ resume: { approved: approval.approved, reason: approval.reason } }),
+      {
+        streamMode: ['updates', 'messages', 'values'],
+        configurable: { thread_id },
+      },
+    );
+
+    return createUIMessageStreamResponse({
+      stream: toUIMessageStream(stream),
+    });
+  }
+
+  // Fresh conversation - convert messages and start
   const langchainMessages = await toBaseMessages(messages);
 
-  // write langchain messages to a file with a clear separator per turn
-  fs.appendFileSync('langchain-messages.txt', '--------------------------------\n');
-  fs.appendFileSync('langchain-messages.txt', 'User Message:\n' + JSON.stringify(messages.at(-1)?.parts.find(part => part.type === 'text')?.text) + '\n');
-  fs.appendFileSync('langchain-messages.txt', langchainMessages.map(message => JSON.stringify(message)).join('\n') + '\n');
-  fs.appendFileSync('langchain-messages.txt', '--------------------------------\n');
-  const stream = await agent.stream(
+  const stream = await graphAgent.stream(
     { messages: langchainMessages },
-    { streamMode: ['values', 'messages'] },
+    {
+      streamMode: ['updates', 'messages', 'values'],
+      configurable: { thread_id },
+    },
   );
 
   return createUIMessageStreamResponse({
